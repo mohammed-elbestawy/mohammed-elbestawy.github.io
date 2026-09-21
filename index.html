@@ -26,14 +26,28 @@
   html{ scroll-behavior:smooth; }
 
   body{
-    background:
-      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0) 0 0/28px 28px,
-      var(--bg);
+    background:var(--bg);
     color:var(--text);
     font-family:var(--body);
     line-height:1.6;
     font-size:16px;
     -webkit-font-smoothing:antialiased;
+  }
+
+  #bg-canvas{
+    position:fixed;
+    inset:0;
+    z-index:-1;
+    pointer-events:none;
+  }
+
+  .cursor-glow{
+    position:fixed; top:0; left:0; width:280px; height:280px;
+    border-radius:50%; pointer-events:none; z-index:2; opacity:0;
+    background:radial-gradient(circle, rgba(94,234,212,0.16) 0%, rgba(232,163,61,0.07) 42%, transparent 72%);
+    filter:blur(6px);
+    transition:opacity .4s ease;
+    will-change:transform;
   }
 
   a{ color:inherit; }
@@ -231,6 +245,7 @@
 </style>
 </head>
 <body>
+<canvas id="bg-canvas" aria-hidden="true"></canvas>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
@@ -1175,5 +1190,152 @@ PORT      STATE      SERVICE
 
 </main>
 
+<script>
+(function(){
+  var canvas = document.getElementById('bg-canvas');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var W, H, stars, dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var t0 = performance.now();
+
+  function resize(){
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildStars();
+  }
+
+  function makeLayer(cellSize, rMin, rMax, alphaBase, glow, skipChance){
+    var out = [];
+    var cols = Math.ceil(W / cellSize), rows = Math.ceil(H / cellSize);
+    for (var cy = 0; cy < rows; cy++){
+      for (var cx = 0; cx < cols; cx++){
+        if (Math.random() < skipChance) continue;
+        out.push({
+          x: cx*cellSize + Math.random()*cellSize,
+          y: cy*cellSize + Math.random()*cellSize,
+          r: rMin + Math.random()*(rMax-rMin),
+          alpha: alphaBase,
+          phase: Math.random()*Math.PI*2,
+          speed: 0.28 + Math.random()*0.32,
+          glow: glow
+        });
+      }
+    }
+    return out;
+  }
+
+  function buildStars(){
+    stars = []
+      .concat(makeLayer(70, 0.5, 0.9, 0.22, false, 0.45))
+      .concat(makeLayer(110, 0.9, 1.4, 0.36, false, 0.35))
+      .concat(makeLayer(190, 1.4, 2.1, 0.55, true, 0.15));
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+
+  var shootingStars = [];
+  var nextShootAt = performance.now() + 3500 + Math.random()*6000;
+
+  function maybeSpawnShootingStar(tNow){
+    if (tNow < nextShootAt) return;
+    var startX = Math.random()*W*0.55;
+    var startY = Math.random()*H*0.35;
+    var angle = (Math.PI/4.2) + (Math.random()-0.5)*0.25;
+    var dist = 200 + Math.random()*160;
+    shootingStars.push({
+      x0: startX, y0: startY,
+      x1: startX + Math.cos(angle)*dist, y1: startY + Math.sin(angle)*dist,
+      start: tNow, dur: 650 + Math.random()*250
+    });
+    nextShootAt = tNow + 10000 + Math.random()*16000;
+  }
+
+  function drawShootingStars(tNow){
+    for (var i = shootingStars.length - 1; i >= 0; i--){
+      var s = shootingStars[i];
+      var prog = (tNow - s.start) / s.dur;
+      if (prog >= 1){ shootingStars.splice(i,1); continue; }
+      var hx = s.x0 + (s.x1-s.x0)*prog, hy = s.y0 + (s.y1-s.y0)*prog;
+      var tailProg = Math.max(0, prog - 0.35);
+      var tx = s.x0 + (s.x1-s.x0)*tailProg, ty = s.y0 + (s.y1-s.y0)*tailProg;
+      var fade = prog < 0.15 ? prog/0.15 : (prog > 0.8 ? (1-prog)/0.2 : 1);
+      var grad = ctx.createLinearGradient(tx, ty, hx, hy);
+      grad.addColorStop(0, 'rgba(225,235,250,0)');
+      grad.addColorStop(1, 'rgba(225,235,250,' + (0.75*fade).toFixed(3) + ')');
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(hx,hy); ctx.stroke();
+      ctx.save();
+      ctx.shadowBlur = 6; ctx.shadowColor = 'rgba(225,235,250,0.9)';
+      ctx.fillStyle = 'rgba(235,242,255,' + (0.9*fade).toFixed(3) + ')';
+      ctx.beginPath(); ctx.arc(hx, hy, 1.5, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function draw(tNow){
+    var t = (tNow - t0) / 1000;
+    ctx.clearRect(0, 0, W, H);
+    for (var i = 0; i < stars.length; i++){
+      var s = stars[i];
+      var tw = 0.55 + 0.45*Math.sin(t*s.speed + s.phase);
+      var a = s.alpha * tw;
+      ctx.save();
+      if (s.glow){ ctx.shadowBlur = 4; ctx.shadowColor = 'rgba(200,225,245,0.5)'; }
+      ctx.fillStyle = 'rgba(225,235,250,' + a.toFixed(3) + ')';
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+    if (!reducedMotion){
+      maybeSpawnShootingStar(tNow);
+      drawShootingStars(tNow);
+    }
+  }
+
+  function step(tNow){
+    draw(tNow);
+    requestAnimationFrame(step);
+  }
+
+  if (reducedMotion){
+    draw(performance.now());
+  } else {
+    requestAnimationFrame(step);
+  }
+})();
+
+(function(){
+  var fine = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!fine || reduced) return;
+
+  var glow = document.createElement('div');
+  glow.className = 'cursor-glow';
+  document.body.appendChild(glow);
+
+  var mx = window.innerWidth/2, my = window.innerHeight/2;
+  var gx = mx, gy = my;
+  var shown = false;
+
+  window.addEventListener('mousemove', function(e){
+    mx = e.clientX; my = e.clientY;
+    if (!shown) { glow.style.opacity = '1'; shown = true; }
+  }, { passive: true });
+
+  document.addEventListener('mouseleave', function(){ glow.style.opacity = '0'; });
+
+  function raf(){
+    gx += (mx - gx) * 0.10;
+    gy += (my - gy) * 0.10;
+    glow.style.transform = 'translate(' + (gx - 140) + 'px,' + (gy - 140) + 'px)';
+    requestAnimationFrame(raf);
+  }
+  raf();
+})();
+</script>
 </body>
 </html>
